@@ -206,8 +206,8 @@ make_annual_plots <- function(letno_tbl, title_suffix = "") {
   letno_tbl_m <- letno_tbl_m |>
     mutate(
       Status = factor(
-        ifelse(Bilanca_EUR >= 0, "Presežek izvoza", "Deficit izvoza"),
-        levels = c("Presežek izvoza", "Deficit izvoza")
+        ifelse(Bilanca_EUR >= 0, "Presežek izvoza", "Presežek uvoza"),
+        levels = c("Presežek izvoza", "Presežek uvoza")
       )
     )
   
@@ -226,8 +226,8 @@ make_annual_plots <- function(letno_tbl, title_suffix = "") {
   ) +
     geom_col() +
     scale_fill_manual(
-      values = c("Presežek izvoza" = COL_EXPORT, "Deficit izvoza" = COL_IMPORT),
-      breaks = c("Presežek izvoza", "Deficit izvoza"),
+      values = c("Presežek izvoza" = COL_EXPORT, "Presežek uvoza" = COL_IMPORT),
+      breaks = c("Presežek izvoza", "Presežek uvoza"),
       name = ""
     ) +
     scale_y_continuous(labels = label_number(suffix = " M€", big.mark = " ", decimal.mark = ",")) +
@@ -743,7 +743,7 @@ ui <- fluidPage(
         choices = c("Bilanca" = "Bilanca_EUR", "Uvoz" = "Uvoz_EUR", "Izvoz" = "Izvoz_EUR"),
         selected = "Bilanca_EUR"
       ),
-      checkboxInput("map_winsor", "Manj ekstremnih barv na zemljevidih", value = TRUE)
+      checkboxInput("map_winsor", "Bolj intenzivne barve manjših vrednosti, manjše razlike med ekstremi (na zemljevidih)", value = TRUE)
     ),
     mainPanel(
       tabsetPanel(
