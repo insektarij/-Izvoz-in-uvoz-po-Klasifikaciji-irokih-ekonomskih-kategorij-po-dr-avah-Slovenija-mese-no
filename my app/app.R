@@ -23,8 +23,8 @@ suppressPackageStartupMessages({
 COL_EXPORT  <- "#BFE6BF"  # izvoz / pozitivno
 COL_IMPORT  <- "#F2B9B9"  # uvoz / negativno
 COL_BALANCE <- "#BFD7FF"  # bilanca (črtni graf)
-COL_EXPORT_LINE <- "#2E7D32"
-COL_IMPORT_LINE <- "#C62828"
+COL_EXPORT_LINE <- "#BFE6BF"
+COL_IMPORT_LINE <- "#F2B9B9"
 
 # ---------------------------
 # Helpers
@@ -52,6 +52,34 @@ fmt_eur_m <- function(x) {
   out <- label_number(scale = 1e-6, suffix = " M€", big.mark = " ", decimal.mark = ",")(x)
   out[is.na(x) | !is.finite(x)] <- "NA"
   out
+}
+
+# “prazen” plotly brez opozoril
+plotly_blank <- function(msg = NULL) {
+  p <- plot_ly(
+    type = "scatter", mode = "markers",
+    x = 0, y = 0,
+    marker = list(opacity = 0),
+    hoverinfo = "skip",
+    showlegend = FALSE
+  ) |>
+    layout(
+      xaxis = list(visible = FALSE),
+      yaxis = list(visible = FALSE),
+      paper_bgcolor = "white",
+      plot_bgcolor  = "white",
+      margin = list(l = 0, r = 0, t = 20, b = 0)
+    )
+  if (!is.null(msg)) {
+    p <- p |> layout(
+      annotations = list(list(
+        x = 0.5, y = 0.5, xref = "paper", yref = "paper",
+        text = msg, showarrow = FALSE,
+        font = list(size = 16, color = "black")
+      ))
+    )
+  }
+  p
 }
 
 # ---------------------------
@@ -137,61 +165,79 @@ prep_annual <- function(dt) {
   list(dt_tot = dt_tot, letno_tbl = letno_tbl, letno_tbl_meur = letno_tbl_meur)
 }
 
+# ---------------------------
+# Letne spremembe: grafi v M€
+# ---------------------------
 make_annual_plots <- function(letno_tbl, title_suffix = "") {
   
-  letno_trade_long <- letno_tbl |>
-    pivot_longer(cols = c(Izvoz_EUR, Uvoz_EUR), names_to = "Tok", values_to = "EUR") |>
-    mutate(Tok = recode(Tok, Izvoz_EUR = "Izvoz", Uvoz_EUR = "Uvoz"))
+  letno_tbl_m <- letno_tbl |>
+    mutate(
+      Izvoz_M = Izvoz_EUR / 1e6,
+      Uvoz_M  = Uvoz_EUR  / 1e6,
+      Bil_M   = Bilanca_EUR / 1e6
+    )
   
-  p_trade <- ggplot(letno_trade_long, aes(x = LETO, y = EUR, color = Tok)) +
+  letno_trade_long <- letno_tbl_m |>
+    select(LETO, Izvoz_M, Uvoz_M) |>
+    pivot_longer(cols = c(Izvoz_M, Uvoz_M), names_to = "Tok", values_to = "M") |>
+    mutate(Tok = recode(Tok, Izvoz_M = "Izvoz", Uvoz_M = "Uvoz"))
+  
+  p_trade <- ggplot(letno_trade_long, aes(x = LETO, y = M, color = Tok)) +
     geom_line(linewidth = 0.9) +
     geom_point(size = 1.6) +
     scale_color_manual(values = c("Izvoz" = COL_EXPORT, "Uvoz" = COL_IMPORT)) +
-    scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+    scale_y_continuous(labels = label_number(suffix = " M€", big.mark = " ", decimal.mark = ",")) +
     scale_x_continuous(breaks = pretty(letno_tbl$LETO, n = 12)) +
-    labs(title = paste0("Skupni uvoz in izvoz blaga (EUR) po letih", title_suffix),
-         x = "Leto", y = "EUR", color = "") +
+    labs(
+      title = paste0("Skupni uvoz in izvoz blaga po letih", title_suffix),
+      x = "Leto", y = "M€", color = ""
+    ) +
     theme_minimal(base_size = 12)
   
   p_balance <- ggplot(
-    letno_tbl,
+    letno_tbl_m,
     aes(
       x = LETO,
-      y = Bilanca_EUR,
+      y = Bil_M,
       fill = factor(
-        Bilanca_EUR >= 0,
-        levels = c(TRUE, FALSE),
-        labels = c("Presežek izvoza", "Deficit izvoza")
+        ifelse(Bilanca_EUR >= 0, "Presežek izvoza", "Deficit izvoza"),
+        levels = c("Presežek izvoza", "Deficit izvoza")
       ),
-      text = paste0("Leto: ", LETO, "<br>Bilanca: ", tooltip_meur(Bilanca_EUR))
+      text = paste0(
+        "Leto: ", LETO,
+        "<br>Bilanca: ",
+        label_number(suffix=" M€", big.mark=" ", decimal.mark=",")(Bil_M)
+      )
     )
   ) +
     geom_col() +
     scale_fill_manual(
       values = c("Presežek izvoza" = COL_EXPORT, "Deficit izvoza" = COL_IMPORT),
+      breaks = c("Presežek izvoza", "Deficit izvoza"),
       name = ""
     ) +
-    scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+    scale_y_continuous(labels = label_number(suffix = " M€", big.mark = " ", decimal.mark = ",")) +
     scale_x_continuous(breaks = pretty(letno_tbl$LETO, n = 12)) +
     labs(
       title = paste0("Trgovinska bilanca (Izvoz – Uvoz) po letih", title_suffix),
-      x = "Leto",
-      y = "EUR"
+      x = "Leto", y = "M€"
     ) +
     theme_minimal(base_size = 12)
   
+  letno_all_long <- letno_tbl_m |>
+    select(LETO, Izvoz_M, Uvoz_M, Bil_M) |>
+    pivot_longer(cols = c(Izvoz_M, Uvoz_M, Bil_M), names_to = "Serija", values_to = "M") |>
+    mutate(Serija = recode(Serija, Izvoz_M = "Izvoz", Uvoz_M = "Uvoz", Bil_M = "Bilanca"))
   
-  letno_all_long <- letno_tbl |>
-    pivot_longer(cols = c(Izvoz_EUR, Uvoz_EUR, Bilanca_EUR), names_to = "Serija", values_to = "EUR") |>
-    mutate(Serija = recode(Serija, Izvoz_EUR = "Izvoz", Uvoz_EUR = "Uvoz", Bilanca_EUR = "Bilanca"))
-  
-  p_all <- ggplot(letno_all_long, aes(x = LETO, y = EUR, color = Serija)) +
+  p_all <- ggplot(letno_all_long, aes(x = LETO, y = M, color = Serija)) +
     geom_line(linewidth = 0.9) +
     scale_color_manual(values = c("Izvoz" = COL_EXPORT, "Uvoz" = COL_IMPORT, "Bilanca" = COL_BALANCE)) +
-    scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+    scale_y_continuous(labels = label_number(suffix = " M€", big.mark = " ", decimal.mark = ",")) +
     scale_x_continuous(breaks = pretty(letno_tbl$LETO, n = 12)) +
-    labs(title = paste0("Izvoz, uvoz in bilanca po letih (EUR)", title_suffix),
-         x = "Leto", y = "EUR", color = "") +
+    labs(
+      title = paste0("Izvoz, uvoz in bilanca po letih", title_suffix),
+      x = "Leto", y = "M€", color = ""
+    ) +
     theme_minimal(base_size = 12)
   
   list(p_trade = p_trade, p_balance = p_balance, p_all = p_all)
@@ -428,82 +474,99 @@ make_growth_plots <- function(growth, year_from, year_to) {
 }
 
 # ---------------------------
-# Map/tab barplots
+# Animirani plotly zemljevid (ISO-3) - stabilen slider
 # ---------------------------
-topN_plot_fill <- function(dat_sf, value_col, title_txt, fill_color) {
-  nm <- country_name_vec_sl(dat_sf)
+make_map_animation_plotly_iso3 <- function(world_bal_sf, years, map_var, winsor = TRUE) {
   
-  tbl <- dat_sf |>
+  years <- sort(unique(as.integer(years)))
+  if (length(years) < 2) return(plotly_blank("Izberi vsaj 2 leti."))
+  
+  df <- world_bal_sf |>
     st_drop_geometry() |>
-    mutate(Drzava = nm) |>
-    filter(!is.na(.data[[value_col]]), is.finite(.data[[value_col]])) |>
-    arrange(desc(.data[[value_col]])) |>
-    slice_head(n = 10)
+    filter(LETO %in% years) |>
+    transmute(
+      iso2 = DRZAVA_KODA,
+      LETO,
+      Uvoz_EUR, Izvoz_EUR, Bilanca_EUR
+    )
   
-  ggplot(tbl, aes(
-    x = reorder(Drzava, .data[[value_col]]), y = .data[[value_col]],
-    text = paste0("Država: ", Drzava, "<br>", title_txt, ": ", tooltip_meur(.data[[value_col]]))
-  )) +
-    geom_col(fill = fill_color) +
-    coord_flip() +
-    scale_y_continuous(labels = label_number(scale = 1e-6, suffix = " M€", big.mark = " ", decimal.mark = ",")) +
-    labs(title = title_txt, x = NULL, y = NULL) +
-    theme_minimal(base_size = 12)
-}
-
-top5_surplus_deficit_plots <- function(dat_sf, period_label) {
-  nm <- country_name_vec_sl(dat_sf)
+  df <- df |>
+    mutate(
+      iso3 = suppressWarnings(countrycode(iso2, "iso2c", "iso3c", warn = FALSE)),
+      iso3 = ifelse(iso2 == "XK", NA_character_, iso3)
+    ) |>
+    filter(!is.na(iso3))
   
-  base <- dat_sf |>
-    st_drop_geometry() |>
-    mutate(Drzava = nm) |>
-    filter(!is.na(Bilanca_EUR), is.finite(Bilanca_EUR))
+  df <- df |>
+    mutate(val_raw = .data[[map_var]])
   
-  top_surplus <- base |>
-    filter(Bilanca_EUR > 0) |>
-    arrange(desc(Bilanca_EUR)) |>
-    slice_head(n = 5) |>
-    transmute(Drzava, Value = Bilanca_EUR) |>
-    arrange(desc(Value)) |>
-    mutate(Drzava = factor(Drzava, levels = Drzava))
+  is_balance <- identical(map_var, "Bilanca_EUR")
+  finite_vals <- df$val_raw[is.finite(df$val_raw)]
+  if (length(finite_vals) == 0) return(plotly_blank("Ni podatkov za izbran izbor."))
   
-  top_deficit <- base |>
-    filter(Bilanca_EUR < 0) |>
-    arrange(Bilanca_EUR) |>
-    slice_head(n = 5) |>
-    transmute(Drzava, Value = -Bilanca_EUR) |>
-    arrange(desc(Value)) |>
-    mutate(Drzava = factor(Drzava, levels = Drzava))
+  if (is_balance) {
+    q <- if (isTRUE(winsor)) quantile(finite_vals, probs = c(0.02, 0.98), na.rm = TRUE) else range(finite_vals, na.rm = TRUE)
+    M <- max(abs(q))
+    domain <- c(-M, M)
+    df$val_plot <- pmin(pmax(df$val_raw, domain[1]), domain[2])
+    colorscale <- list(list(0.0, "red"), list(0.5, "white"), list(1.0, "green"))
+    cbar_title <- "Bilanca (M€)"
+    hover <- paste0("ISO3: ", df$iso3, "<br>Bilanca: ", fmt_eur_m(df$val_raw), "<br>Leto: ", df$LETO)
+  } else {
+    val_pos <- pmax(df$val_raw, 0)
+    finite_pos <- val_pos[is.finite(val_pos)]
+    upper <- if (isTRUE(winsor)) as.numeric(quantile(finite_pos, probs = 0.98, na.rm = TRUE)) else max(finite_pos, na.rm = TRUE)
+    if (!is.finite(upper) || upper <= 0) upper <- 1
+    domain <- c(0, upper)
+    df$val_plot <- pmin(pmax(val_pos, domain[1]), domain[2])
+    
+    if (identical(map_var, "Uvoz_EUR")) {
+      colorscale <- list(list(0.0, "white"), list(1.0, "steelblue"))
+      cbar_title <- "Uvoz (M€)"
+      hover <- paste0("ISO3: ", df$iso3, "<br>Uvoz: ", fmt_eur_m(df$val_raw), "<br>Leto: ", df$LETO)
+    } else {
+      colorscale <- list(list(0.0, "white"), list(1.0, "darkgreen"))
+      cbar_title <- "Izvoz (M€)"
+      hover <- paste0("ISO3: ", df$iso3, "<br>Izvoz: ", fmt_eur_m(df$val_raw), "<br>Leto: ", df$LETO)
+    }
+  }
   
-  p_surplus <- ggplot(top_surplus, aes(
-    x = Drzava, y = Value,
-    text = paste0("Država: ", Drzava, "<br>Presežek IZVOZA: ", tooltip_meur(Value))
-  )) +
-    geom_col(fill = COL_EXPORT) +
-    scale_y_continuous(
-      labels = label_number(scale = 1e-6, suffix = " M€", big.mark = " ", decimal.mark = ","),
-      limits = c(0, NA)
-    ) +
-    labs(title = paste0("5 držav z največjim presežkom IZVOZA (Izvoz > Uvoz), ", period_label),
-         x = NULL, y = NULL) +
-    theme_minimal(base_size = 12) +
-    theme(axis.text.x = element_text(angle = 35, hjust = 1))
+  df$FRAME <- as.character(df$LETO)
   
-  p_deficit <- ggplot(top_deficit, aes(
-    x = Drzava, y = Value,
-    text = paste0("Država: ", Drzava, "<br>Deficit IZVOZA: ", tooltip_meur(Value))
-  )) +
-    geom_col(fill = COL_IMPORT) +
-    scale_y_continuous(
-      labels = label_number(scale = 1e-6, suffix = " M€", big.mark = " ", decimal.mark = ","),
-      limits = c(0, NA)
-    ) +
-    labs(title = paste0("5 držav z največjim deficitom IZVOZA (Uvoz > Izvoz), ", period_label),
-         x = NULL, y = NULL) +
-    theme_minimal(base_size = 12) +
-    theme(axis.text.x = element_text(angle = 35, hjust = 1))
-  
-  list(surplus = p_surplus, deficit = p_deficit)
+  plot_ly(
+    data = df,
+    type = "choropleth",
+    locations = ~iso3,
+    z = ~val_plot,
+    frame = ~FRAME,
+    locationmode = "ISO-3",
+    text = ~hover,
+    hoverinfo = "text",
+    zmin = domain[1],
+    zmax = domain[2],
+    colorscale = colorscale,
+    colorbar = list(title = cbar_title)
+  ) |>
+    layout(
+      geo = list(
+        projection = list(type = "natural earth"),
+        showframe = FALSE,
+        showcoastlines = FALSE,
+        bgcolor = "white"
+      ),
+      paper_bgcolor = "white",
+      plot_bgcolor  = "white",
+      margin = list(l = 0, r = 0, t = 10, b = 70)
+    ) |>
+    animation_opts(frame = 1000, transition = 0, redraw = TRUE) |>
+    animation_slider(
+      currentvalue = list(prefix = "", font = list(size = 30, color = "black")),
+      x = 0.05, len = 0.90, y = -0.12
+    ) |>
+    animation_button(
+      x = 0.05, y = -0.18, xanchor = "left", yanchor = "top",
+      direction = "left"
+    )
 }
 
 # ---------------------------
@@ -515,12 +578,12 @@ ui <- fluidPage(
     sidebarPanel(
       helpText(
         paste0(
-          "PX datoteka iz repozitorija: ", PX_FILENAME, "\n", "\n",
+          "PX datoteka iz repozitorija: ", PX_FILENAME, "\n\n",
           "Podatki pridobljeni iz podatkovne baze SiStat (SURS) - ",
           "Izvoz in uvoz po Standardni mednarodni trgovinski klasifikaciji, po državah, Slovenija, mesečno  ",
           "[ID tabele:  2490301S]"
-              )
-              ),
+        )
+      ),
       hr(),
       uiOutput("year_ui"),
       uiOutput("growth_range_ui"),
@@ -561,11 +624,7 @@ ui <- fluidPage(
           "Zemljevid",
           leafletOutput("leaf_map", height = 620),
           br(),
-          plotlyOutput("top_exporters", height = 320),
-          plotlyOutput("top_importers", height = 320),
-          br(),
-          plotlyOutput("top_surplus", height = 360),
-          plotlyOutput("top_deficit", height = 360)
+          plotlyOutput("map_anim", height = 520)
         ),
         tabPanel(
           "Indeksi rasti",
@@ -596,13 +655,11 @@ server <- function(input, output, session) {
     dt_tot = NULL,
     letno_tbl = NULL,
     letno_tbl_meur = NULL,
-    annual_plots = NULL,
     world_bal = NULL,
     years_available = NULL,
     growth = NULL
   )
   
-  # ---- Samodejni zagon (brez gumba): naloži se takoj ob startu app-a
   observeEvent(TRUE, {
     px_path <- resolve_px_path(PX_FILENAME)
     
@@ -654,12 +711,8 @@ server <- function(input, output, session) {
     )
   })
   
-  growth_year_from <- reactive({
-    req(input$growth_year_range); as.integer(input$growth_year_range[1])
-  })
-  growth_year_to <- reactive({
-    req(input$growth_year_range); as.integer(input$growth_year_range[2])
-  })
+  growth_year_from <- reactive({ req(input$growth_year_range); as.integer(input$growth_year_range[1]) })
+  growth_year_to   <- reactive({ req(input$growth_year_range); as.integer(input$growth_year_range[2]) })
   
   growth_date_from <- reactive(as.Date(sprintf("%04d-01-01", growth_year_from())))
   growth_date_to   <- reactive(as.Date(sprintf("%04d-12-31", growth_year_to())))
@@ -669,16 +722,13 @@ server <- function(input, output, session) {
     paste0(growth_year_from(), "–", growth_year_to())
   })
   
-  # ---- Letne spremembe: vir letne tabele (all vs range)
+  # ---------------------------
+  # Letne spremembe
+  # ---------------------------
   letno_tbl_for_annual <- reactive({
     req(rv$letno_tbl)
-    if (identical(input$annual_mode, "all")) {
-      rv$letno_tbl
-    } else {
-      req(input$growth_year_range)
-      rv$letno_tbl |>
-        filter(LETO >= growth_year_from(), LETO <= growth_year_to())
-    }
+    if (identical(input$annual_mode, "all")) rv$letno_tbl
+    else rv$letno_tbl |> filter(LETO >= growth_year_from(), LETO <= growth_year_to())
   })
   
   annual_title_suffix <- reactive({
@@ -690,21 +740,12 @@ server <- function(input, output, session) {
     make_annual_plots(letno_tbl_for_annual(), title_suffix = annual_title_suffix())
   })
   
-  # ---- Letno: tabela (v M€) naj ostane “celotna”, ker je bolj uporabna; če želiš tudi to filtrirati, samo reci.
   output$tbl_annual <- renderDT({
     req(rv$letno_tbl_meur)
     df <- rv$letno_tbl_meur |> as.data.frame()
-    datatable(
-      dt_safe_df(df),
-      options = list(pageLength = 20, scrollX = TRUE),
-      rownames = FALSE
-    ) |>
+    datatable(dt_safe_df(df), options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE) |>
       formatRound(columns = c("Izvoz (M€)", "Uvoz (M€)", "Bilanca (M€)"), digits = 1) |>
-      formatStyle(
-        "Bilanca (M€)",
-        target = "row",
-        backgroundColor = styleInterval(0, c(COL_IMPORT, COL_EXPORT))
-      )
+      formatStyle("Bilanca (M€)", target = "row", backgroundColor = styleInterval(0, c(COL_IMPORT, COL_EXPORT)))
   })
   
   output$plot_trade <- renderPlot({
@@ -723,7 +764,95 @@ server <- function(input, output, session) {
       layout(hoverlabel = list(align = "left"))
   })
   
-  # ---- Indeksi rasti: grafi (filtrirano po sliderju)
+  # ---------------------------
+  # Zemljevid + animacija
+  # ---------------------------
+  output$leaf_map <- renderLeaflet({
+    req(rv$world_bal, input$year_choice, input$map_var)
+    
+    dat <- rv$world_bal |> dplyr::filter(LETO == as.integer(input$year_choice))
+    nm <- country_name_vec_sl(dat)
+    
+    val_raw <- dat[[input$map_var]]
+    finite_vals <- val_raw[is.finite(val_raw)]
+    is_balance <- identical(input$map_var, "Bilanca_EUR")
+    
+    if (length(finite_vals) == 0) {
+      return(leaflet(dat) |> addProviderTiles(providers$CartoDB.Positron))
+    }
+    
+    if (is_balance) {
+      q <- if (isTRUE(input$map_winsor)) quantile(finite_vals, probs = c(0.02, 0.98), na.rm = TRUE) else range(finite_vals, na.rm = TRUE)
+      M <- max(abs(q))
+      domain <- c(-M, M)
+      val_plot <- pmin(pmax(val_raw, domain[1]), domain[2])
+      
+      pal <- colorNumeric(colorRampPalette(c("red", "white", "green"))(256), domain = domain, na.color = "#d9d9d9")
+      labels <- sprintf("<strong>%s</strong><br/>%s", htmlEscape(nm), htmlEscape(fmt_eur_m(val_raw))) |> lapply(HTML)
+      
+      leaflet(dat) |>
+        addProviderTiles(providers$CartoDB.Positron) |>
+        addPolygons(
+          fillColor = pal(val_plot), weight = 0.25, opacity = 1, color = "#444444", fillOpacity = 0.88,
+          label = labels,
+          highlightOptions = highlightOptions(weight = 1.2, color = "#000000", bringToFront = TRUE)
+        ) |>
+        addLegend(
+          position = "bottomright", pal = pal, values = val_plot,
+          title = paste0("Bilanca (M€), ", input$year_choice),
+          labFormat = labelFormat(transform = function(x) x / 1e6, suffix = " M€")
+        )
+    } else {
+      val_pos <- pmax(val_raw, 0)
+      finite_pos <- val_pos[is.finite(val_pos)]
+      upper <- if (isTRUE(input$map_winsor)) as.numeric(quantile(finite_pos, probs = 0.98, na.rm = TRUE)) else max(finite_pos, na.rm = TRUE)
+      if (!is.finite(upper) || upper <= 0) upper <- 1
+      domain <- c(0, upper)
+      val_plot <- pmin(pmax(val_pos, domain[1]), domain[2])
+      
+      pal <- switch(
+        input$map_var,
+        "Uvoz_EUR"  = colorNumeric(colorRampPalette(c("white", "steelblue"))(256), domain = domain, na.color = "#d9d9d9"),
+        "Izvoz_EUR" = colorNumeric(colorRampPalette(c("white", "darkgreen"))(256), domain = domain, na.color = "#d9d9d9")
+      )
+      
+      labels <- sprintf("<strong>%s</strong><br/>%s", htmlEscape(nm), htmlEscape(fmt_eur_m(val_pos))) |> lapply(HTML)
+      
+      leaflet(dat) |>
+        addProviderTiles(providers$CartoDB.Positron) |>
+        addPolygons(
+          fillColor = pal(val_plot), weight = 0.25, opacity = 1, color = "#444444", fillOpacity = 0.88,
+          label = labels,
+          highlightOptions = highlightOptions(weight = 1.2, color = "#000000", bringToFront = TRUE)
+        ) |>
+        addLegend(
+          position = "bottomright", pal = pal, values = val_plot,
+          title = if (identical(input$map_var, "Uvoz_EUR")) paste0("Uvoz (M€), ", input$year_choice) else paste0("Izvoz (M€), ", input$year_choice),
+          labFormat = labelFormat(transform = function(x) x / 1e6, suffix = " M€")
+        )
+    }
+  })
+  
+  output$map_anim <- renderPlotly({
+    req(rv$world_bal, input$growth_year_range, input$map_var)
+    
+    if (!identical(input$map_mode, "range")) {
+      return(plotly_blank("Animacija se pokaže, ko izbereš: Vir podatkov → Obdobje (slider)."))
+    }
+    
+    yrs <- seq.int(growth_year_from(), growth_year_to(), by = 1)
+    
+    make_map_animation_plotly_iso3(
+      world_bal_sf = rv$world_bal,
+      years = yrs,
+      map_var = input$map_var,
+      winsor = isTRUE(input$map_winsor)
+    )
+  })
+  
+  # ---------------------------
+  # Indeksi rasti (VRNJENO)
+  # ---------------------------
   growth_plots_now <- reactive({
     req(rv$growth, input$growth_year_range)
     make_growth_plots(rv$growth, growth_year_from(), growth_year_to())
@@ -744,7 +873,6 @@ server <- function(input, output, session) {
     style_growth_plotly(ggplotly(growth_plots_now()$p_quarter, tooltip = "text"))
   })
   
-  # ---- Indeksi rasti: tabele (filtrirane po sliderju)
   output$tbl_growth_annual <- renderDT({
     req(rv$growth, input$growth_year_range)
     
@@ -818,134 +946,6 @@ server <- function(input, output, session) {
       formatStyle("Uvoz_QoQ_pct",    backgroundColor = styleInterval(0, c(COL_IMPORT, COL_EXPORT))) |>
       formatStyle("Izvoz_YoY_q_pct", backgroundColor = styleInterval(0, c(COL_IMPORT, COL_EXPORT))) |>
       formatStyle("Uvoz_YoY_q_pct",  backgroundColor = styleInterval(0, c(COL_IMPORT, COL_EXPORT)))
-  })
-  
-  # ---- Zemljevid: leto
-  dat_year <- reactive({
-    req(rv$world_bal, input$year_choice)
-    rv$world_bal |> dplyr::filter(LETO == as.integer(input$year_choice))
-  })
-  
-  # ---- Zemljevid: vsota po obdobju (slider)
-  dat_year_range <- reactive({
-    req(rv$world_bal, input$growth_year_range)
-    
-    df <- rv$world_bal |>
-      st_drop_geometry() |>
-      filter(!is.na(DRZAVA_KODA),
-             LETO >= growth_year_from(),
-             LETO <= growth_year_to()) |>
-      group_by(DRZAVA_KODA) |>
-      summarise(
-        Uvoz_EUR    = sum(Uvoz_EUR, na.rm = TRUE),
-        Izvoz_EUR   = sum(Izvoz_EUR, na.rm = TRUE),
-        Bilanca_EUR = sum(Bilanca_EUR, na.rm = TRUE),
-        .groups = "drop"
-      )
-    
-    world <- ne_countries(scale = "medium", returnclass = "sf") |>
-      mutate(DRZAVA_KODA = iso_a2)
-    
-    world |> left_join(df, by = "DRZAVA_KODA")
-  })
-  
-  dat_map <- reactive({
-    req(rv$world_bal)
-    if (identical(input$map_mode, "range")) dat_year_range() else dat_year()
-  })
-  
-  map_label <- reactive({
-    if (identical(input$map_mode, "range")) period_label_range() else as.character(input$year_choice)
-  })
-  
-  output$leaf_map <- renderLeaflet({
-    req(dat_map(), input$map_var)
-    dat <- dat_map()
-    nm <- country_name_vec_sl(dat)
-    
-    val_raw <- dat[[input$map_var]]
-    finite_vals <- val_raw[is.finite(val_raw)]
-    is_balance <- identical(input$map_var, "Bilanca_EUR")
-    
-    if (length(finite_vals) == 0) {
-      return(leaflet(dat) |> addProviderTiles(providers$CartoDB.Positron))
-    }
-    
-    if (is_balance) {
-      q <- if (isTRUE(input$map_winsor)) quantile(finite_vals, probs = c(0.02, 0.98), na.rm = TRUE) else range(finite_vals, na.rm = TRUE)
-      M <- max(abs(q))
-      domain <- c(-M, M)
-      val_plot <- pmin(pmax(val_raw, domain[1]), domain[2])
-      
-      pal <- colorNumeric(colorRampPalette(c("red", "white", "green"))(256), domain = domain, na.color = "#d9d9d9")
-      labels <- sprintf("<strong>%s</strong><br/>%s", htmlEscape(nm), htmlEscape(fmt_eur_m(val_raw))) |> lapply(HTML)
-      
-      leaflet(dat) |>
-        addProviderTiles(providers$CartoDB.Positron) |>
-        addPolygons(fillColor = pal(val_plot), weight = 0.25, opacity = 1, color = "#444444", fillOpacity = 0.88,
-                    label = labels, highlightOptions = highlightOptions(weight = 1.2, color = "#000000", bringToFront = TRUE)) |>
-        addLegend(position = "bottomright", pal = pal, values = val_plot,
-                  title = paste0("Bilanca (M€), ", map_label()),
-                  labFormat = labelFormat(transform = function(x) x / 1e6, suffix = " M€"))
-    } else {
-      val_pos <- pmax(val_raw, 0)
-      finite_pos <- val_pos[is.finite(val_pos)]
-      upper <- if (isTRUE(input$map_winsor)) as.numeric(quantile(finite_pos, probs = 0.98, na.rm = TRUE)) else max(finite_pos, na.rm = TRUE)
-      if (!is.finite(upper) || upper <= 0) upper <- 1
-      domain <- c(0, upper)
-      val_plot <- pmin(pmax(val_pos, domain[1]), domain[2])
-      
-      pal <- switch(
-        input$map_var,
-        "Uvoz_EUR"  = colorNumeric(colorRampPalette(c("white", "steelblue"))(256), domain = domain, na.color = "#d9d9d9"),
-        "Izvoz_EUR" = colorNumeric(colorRampPalette(c("white", "darkgreen"))(256), domain = domain, na.color = "#d9d9d9")
-      )
-      
-      labels <- sprintf("<strong>%s</strong><br/>%s", htmlEscape(nm), htmlEscape(fmt_eur_m(val_pos))) |> lapply(HTML)
-      
-      leaflet(dat) |>
-        addProviderTiles(providers$CartoDB.Positron) |>
-        addPolygons(fillColor = pal(val_plot), weight = 0.25, opacity = 1, color = "#444444", fillOpacity = 0.88,
-                    label = labels, highlightOptions = highlightOptions(weight = 1.2, color = "#000000", bringToFront = TRUE)) |>
-        addLegend(position = "bottomright", pal = pal, values = val_plot,
-                  title = if (identical(input$map_var, "Uvoz_EUR")) paste0("Uvoz (M€), ", map_label()) else paste0("Izvoz (M€), ", map_label()),
-                  labFormat = labelFormat(transform = function(x) x / 1e6, suffix = " M€"))
-    }
-  })
-  
-  # ---- Grafi pod zemljevidom: vedno sledijo map_mode
-  output$top_exporters <- renderPlotly({
-    req(dat_map())
-    title_txt <- if (identical(input$map_mode, "range")) {
-      paste0("10 najpomembnejših izvoznikov v obdobju ", map_label(), ".")
-    } else {
-      paste0("10 najpomembnejših izvoznikov v letu ", map_label(), ".")
-    }
-    p <- topN_plot_fill(dat_map(), "Izvoz_EUR", title_txt, COL_EXPORT)
-    ggplotly(p, tooltip = "text") |> layout(hoverlabel = list(align = "left"))
-  })
-  
-  output$top_importers <- renderPlotly({
-    req(dat_map())
-    title_txt <- if (identical(input$map_mode, "range")) {
-      paste0("10 najpomembnejših uvoznikov v obdobju ", map_label(), ".")
-    } else {
-      paste0("10 najpomembnejših uvoznikov v letu ", map_label(), ".")
-    }
-    p <- topN_plot_fill(dat_map(), "Uvoz_EUR", title_txt, COL_IMPORT)
-    ggplotly(p, tooltip = "text") |> layout(hoverlabel = list(align = "left"))
-  })
-  
-  output$top_surplus <- renderPlotly({
-    req(dat_map())
-    pp <- top5_surplus_deficit_plots(dat_map(), map_label())
-    ggplotly(pp$surplus, tooltip = "text") |> layout(hoverlabel = list(align = "left"))
-  })
-  
-  output$top_deficit <- renderPlotly({
-    req(dat_map())
-    pp <- top5_surplus_deficit_plots(dat_map(), map_label())
-    ggplotly(pp$deficit, tooltip = "text") |> layout(hoverlabel = list(align = "left"))
   })
 }
 
