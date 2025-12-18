@@ -14,7 +14,7 @@ suppressPackageStartupMessages({
   library(DT)
   library(htmltools)
   library(plotly)
-  library(countrycode)  # za slovenska imena držav (CLDR)
+  library(countrycode)  # slovenska imena držav (CLDR)
 })
 
 # ---------------------------
@@ -23,6 +23,10 @@ suppressPackageStartupMessages({
 COL_EXPORT  <- "#BFE6BF"  # pastelno zelena (izvoz / pozitivno)
 COL_IMPORT  <- "#F2B9B9"  # pastelno rdeča (uvoz / negativno)
 COL_BALANCE <- "#BFD7FF"  # pastelno modra (bilanca samo pri črtnih grafih)
+
+# temnejše barve samo za linije (bolj vidno)
+COL_EXPORT_LINE <- "#2E7D32"
+COL_IMPORT_LINE <- "#C62828"
 
 # ---------------------------
 # Helpers (DT safe + formatting)
@@ -65,14 +69,13 @@ fmt_eur_m <- function(x) {
 # Slovenska imena držav (CLDR)
 # ---------------------------
 country_name_vec_sl <- function(sf_dat) {
-  # rnaturalearth sf: iso_a2 je praviloma prisoten (včasih NA)
   iso2 <- sf_dat$iso_a2
+  
   nm_fallback <- sf_dat$name_long
   if (is.null(nm_fallback)) nm_fallback <- sf_dat$name
   if (is.null(nm_fallback)) nm_fallback <- sf_dat$admin
   if (is.null(nm_fallback)) nm_fallback <- rep("?", nrow(sf_dat))
   
-  # CLDR slovenska imena (countrycode)
   nm_sl <- suppressWarnings(countrycode(
     sourcevar   = iso2,
     origin      = "iso2c",
@@ -80,10 +83,8 @@ country_name_vec_sl <- function(sf_dat) {
     warn        = FALSE
   ))
   
-  # posebni primeri (npr. Kosovo ima pogosto iso_a2 = "XK")
   nm_sl <- ifelse(!is.na(iso2) & iso2 == "XK", "Kosovo", nm_sl)
   
-  # če CLDR nima vnosa, pusti fallback
   out <- ifelse(is.na(nm_sl) | nm_sl == "", as.character(nm_fallback), as.character(nm_sl))
   out
 }
@@ -92,18 +93,15 @@ country_name_vec_sl <- function(sf_dat) {
 # PX file resolver (repo)
 # ---------------------------
 
-# Ime datoteke mora biti ENAKO kot v repozitoriju
 PX_FILENAME <- "Izvoz in uvoz po Klasifikaciji širokih ekonomskih kategorij, po državah, Slovenija, mesečno.px"
 
 resolve_px_path <- function(fname = PX_FILENAME) {
-  # najprej poskusi data/ (priporočeno), potem root
   p1 <- file.path("data", fname)
   p2 <- file.path(fname)
   
   if (file.exists(p1)) return(normalizePath(p1, winslash = "/", mustWork = TRUE))
   if (file.exists(p2)) return(normalizePath(p2, winslash = "/", mustWork = TRUE))
   
-  # če nič, vrni "pričakovano" pot (za lep error)
   return(p1)
 }
 
@@ -293,9 +291,167 @@ prep_growth <- function(dt_tot) {
   
   list(
     letno_yoy_tbl = letno_tbl,
-    monthly_tbl = m_tbl,
+    monthly_tbl   = m_tbl,
     quarterly_tbl = q_tbl
   )
+}
+
+# ---------------------------
+# Plotly: popravi barve v legendi + odstrani duplikate
+# ---------------------------
+style_growth_plotly <- function(p) {
+  b <- plotly_build(p)
+  
+  seen <- character(0)
+  for (i in seq_along(b$x$data)) {
+    nm <- b$x$data[[i]]$name
+    if (is.null(nm) || is.na(nm) || nm == "") next
+    
+    # določimo barvo po imenu serije
+    col <- NULL
+    if (grepl("^Izvoz", nm)) col <- COL_EXPORT_LINE
+    if (grepl("^Uvoz",  nm)) col <- COL_IMPORT_LINE
+    
+    if (!is.null(col)) {
+      # linija + marker
+      if (!is.null(b$x$data[[i]]$line))   b$x$data[[i]]$line$color   <- col
+      if (!is.null(b$x$data[[i]]$marker)) b$x$data[[i]]$marker$color <- col
+      # včasih line/marker še ne obstajata
+      if (is.null(b$x$data[[i]]$line))   b$x$data[[i]]$line   <- list(color = col, width = 3)
+      if (is.null(b$x$data[[i]]$marker)) b$x$data[[i]]$marker <- list(color = col)
+    }
+    
+    # odstrani podvojene legend entry-je (facet duplicira trace)
+    if (nm %in% seen) {
+      b$x$data[[i]]$showlegend <- FALSE
+    } else {
+      b$x$data[[i]]$showlegend <- TRUE
+      seen <- c(seen, nm)
+    }
+  }
+  
+  b |> layout(hoverlabel = list(align = "left"))
+}
+
+# ---------------------------
+# Growth plots (z obdobjem)
+# ---------------------------
+
+make_growth_plots <- function(growth, year_from, year_to) {
+  
+  # varnost
+  if (is.null(year_from) || is.null(year_to)) {
+    year_from <- min(growth$letno_yoy_tbl$LETO, na.rm = TRUE)
+    year_to   <- max(growth$letno_yoy_tbl$LETO, na.rm = TRUE)
+  }
+  if (year_from > year_to) {
+    tmp <- year_from; year_from <- year_to; year_to <- tmp
+  }
+  
+  date_from <- as.Date(sprintf("%04d-01-01", year_from))
+  date_to   <- as.Date(sprintf("%04d-12-31", year_to))
+  
+  # ---- Letno YoY (filtrirano po obdobju)
+  a <- growth$letno_yoy_tbl |>
+    filter(LETO >= year_from, LETO <= year_to) |>
+    select(LETO, Izvoz_YoY_pct, Uvoz_YoY_pct) |>
+    pivot_longer(cols = c(Izvoz_YoY_pct, Uvoz_YoY_pct), names_to = "Serija", values_to = "pct") |>
+    mutate(
+      Serija = recode(Serija, Izvoz_YoY_pct = "Izvoz (YoY)", Uvoz_YoY_pct = "Uvoz (YoY)"),
+      Serija = factor(Serija, levels = c("Izvoz (YoY)", "Uvoz (YoY)"))
+    )
+  
+  p_annual <- ggplot(a, aes(
+    x = LETO, y = pct / 100, color = Serija,
+    text = paste0("Leto: ", LETO, "<br>", Serija, ": ",
+                  percent(pct / 100, accuracy = 0.1, decimal.mark = ","))
+  )) +
+    geom_hline(yintercept = 0, linewidth = 0.5) +
+    geom_line(linewidth = 1.6) +
+    geom_point(size = 2.4) +
+    scale_color_manual(values = c("Izvoz (YoY)" = COL_EXPORT_LINE, "Uvoz (YoY)" = COL_IMPORT_LINE), drop = FALSE) +
+    scale_y_continuous(labels = percent_format(accuracy = 0.1, decimal.mark = ",")) +
+    scale_x_continuous(breaks = pretty(unique(a$LETO), n = 10)) +
+    labs(title = "Letna rast (YoY)", x = "Leto", y = "Sprememba", color = "") +
+    theme_minimal(base_size = 12)
+  
+  # ---- Mesečno (filtrirano po obdobju)
+  m <- growth$monthly_tbl |>
+    filter(DATE >= date_from, DATE <= date_to) |>
+    arrange(DATE) |>
+    select(DATE, Izvoz_MoM_pct, Uvoz_MoM_pct, Izvoz_YoY_pct, Uvoz_YoY_pct) |>
+    pivot_longer(cols = -DATE, names_to = "Serija", values_to = "pct") |>
+    mutate(
+      Serija = recode(
+        Serija,
+        Izvoz_MoM_pct = "Izvoz (MoM)",
+        Uvoz_MoM_pct  = "Uvoz (MoM)",
+        Izvoz_YoY_pct = "Izvoz (YoY)",
+        Uvoz_YoY_pct  = "Uvoz (YoY)"
+      ),
+      Serija = factor(Serija, levels = c("Izvoz (MoM)","Uvoz (MoM)","Izvoz (YoY)","Uvoz (YoY)")),
+      Tip = ifelse(grepl("\\(MoM\\)", Serija), "MoM", "YoY")
+    )
+  
+  p_monthly <- ggplot(m, aes(
+    x = DATE, y = pct / 100, color = Serija,
+    text = paste0("Datum: ", format(DATE, "%Y-%m"), "<br>",
+                  Serija, ": ", percent(pct / 100, accuracy = 0.1, decimal.mark = ","))
+  )) +
+    geom_hline(yintercept = 0, linewidth = 0.5) +
+    geom_line(linewidth = 1.3) +
+    geom_point(size = 1.9) +
+    facet_wrap(~Tip, ncol = 1, scales = "free_y") +
+    scale_color_manual(values = c(
+      "Izvoz (MoM)" = COL_EXPORT_LINE,
+      "Uvoz (MoM)"  = COL_IMPORT_LINE,
+      "Izvoz (YoY)" = COL_EXPORT_LINE,
+      "Uvoz (YoY)"  = COL_IMPORT_LINE
+    ), drop = FALSE) +
+    scale_y_continuous(labels = percent_format(accuracy = 0.1, decimal.mark = ",")) +
+    labs(title = "Mesečni indeksi rasti", x = "Mesec", y = "Sprememba", color = "") +
+    theme_minimal(base_size = 12)
+  
+  # ---- Četrtletno (filtrirano po obdobju)
+  q <- growth$quarterly_tbl |>
+    filter(Q_DATE >= date_from, Q_DATE <= date_to) |>
+    arrange(Q_DATE) |>
+    mutate(Q_lab = paste0(LETO, " Q", QTR)) |>
+    select(Q_DATE, Q_lab, Izvoz_QoQ_pct, Uvoz_QoQ_pct, Izvoz_YoY_q_pct, Uvoz_YoY_q_pct) |>
+    pivot_longer(cols = c(Izvoz_QoQ_pct, Uvoz_QoQ_pct, Izvoz_YoY_q_pct, Uvoz_YoY_q_pct),
+                 names_to = "Serija", values_to = "pct") |>
+    mutate(
+      Serija = recode(
+        Serija,
+        Izvoz_QoQ_pct   = "Izvoz (QoQ)",
+        Uvoz_QoQ_pct    = "Uvoz (QoQ)",
+        Izvoz_YoY_q_pct = "Izvoz (YoY)",
+        Uvoz_YoY_q_pct  = "Uvoz (YoY)"
+      ),
+      Serija = factor(Serija, levels = c("Izvoz (QoQ)","Uvoz (QoQ)","Izvoz (YoY)","Uvoz (YoY)")),
+      Tip = ifelse(grepl("\\(QoQ\\)", Serija), "QoQ", "YoY")
+    )
+  
+  p_quarter <- ggplot(q, aes(
+    x = Q_DATE, y = pct / 100, color = Serija,
+    text = paste0("Četrtletje: ", Q_lab, "<br>",
+                  Serija, ": ", percent(pct / 100, accuracy = 0.1, decimal.mark = ","))
+  )) +
+    geom_hline(yintercept = 0, linewidth = 0.5) +
+    geom_line(linewidth = 1.3) +
+    geom_point(size = 1.9) +
+    facet_wrap(~Tip, ncol = 1, scales = "free_y") +
+    scale_color_manual(values = c(
+      "Izvoz (QoQ)" = COL_EXPORT_LINE,
+      "Uvoz (QoQ)"  = COL_IMPORT_LINE,
+      "Izvoz (YoY)" = COL_EXPORT_LINE,
+      "Uvoz (YoY)"  = COL_IMPORT_LINE
+    ), drop = FALSE) +
+    scale_y_continuous(labels = percent_format(accuracy = 0.1, decimal.mark = ",")) +
+    labs(title = "Četrtletni indeksi rasti", x = "Čas", y = "Sprememba", color = "") +
+    theme_minimal(base_size = 12)
+  
+  list(p_annual = p_annual, p_monthly = p_monthly, p_quarter = p_quarter)
 }
 
 # ---------------------------
@@ -381,26 +537,27 @@ top5_surplus_deficit_plots <- function(dat_year_sf, year_choice) {
 # ---------------------------
 
 ui <- fluidPage(
-  titlePanel("PX (Izvoz/Uvoz) – Shiny pregled"),
+  titlePanel("Pregled bilanc uvoza in izvoza - Slovenija 2000 - 2025"),
   sidebarLayout(
     sidebarPanel(
       helpText(paste0("PX datoteka iz repozitorija: ", PX_FILENAME)),
-      actionButton("load_btn", "Naloži & izračunaj", class = "btn-primary"),
+      actionButton("load_btn", "Izračunaj", class = "btn-primary"),
       hr(),
       uiOutput("year_ui"),
+      uiOutput("growth_range_ui"),
       hr(),
       selectInput(
         "map_var",
-        "Zemljevid: spremenljivka",
+        "Spremenljivka prikaza zemljevida",
         choices = c("Bilanca" = "Bilanca_EUR", "Uvoz" = "Uvoz_EUR", "Izvoz" = "Izvoz_EUR"),
         selected = "Bilanca_EUR"
       ),
-      checkboxInput("map_winsor", "Uporabi 2–98% meje (brez ekstremov)", value = TRUE)
+      checkboxInput("map_winsor", "Manj ekstremnih barv na zemljevidih", value = TRUE)
     ),
     mainPanel(
       tabsetPanel(
         tabPanel(
-          "Letno",
+          "Letne spremembe",
           DTOutput("tbl_annual"),
           br(),
           plotOutput("plot_trade", height = 320),
@@ -418,15 +575,18 @@ ui <- fluidPage(
           plotlyOutput("top_deficit", height = 360)
         ),
         tabPanel(
-          "Rasti",
+          "Indeksi rasti",
           h4("Letno (YoY)"),
           DTOutput("tbl_growth_annual"),
+          plotlyOutput("growth_plot_annual", height = 320),
           hr(),
           h4("Mesečno (najnovejše zgoraj)"),
           DTOutput("tbl_growth_monthly_tail"),
+          plotlyOutput("growth_plot_monthly", height = 420),
           hr(),
           h4("Četrtletno (najnovejše zgoraj)"),
-          DTOutput("tbl_growth_quarter_tail")
+          DTOutput("tbl_growth_quarter_tail"),
+          plotlyOutput("growth_plot_quarter", height = 420)
         )
       )
     )
@@ -446,7 +606,8 @@ server <- function(input, output, session) {
     annual_plots = NULL,
     world_bal = NULL,
     years_available = NULL,
-    growth = NULL
+    growth = NULL,
+    growth_plots = NULL
   )
   
   observeEvent(input$load_btn, {
@@ -455,7 +616,7 @@ server <- function(input, output, session) {
     if (!file.exists(px_path)) {
       showNotification(
         paste0("Ne najdem .px v repozitoriju. Pričakovana pot: ", px_path,
-               " | Namig: daj datoteko v mapo data/ (priporočeno) ali v root repo."),
+               " | Namig: daj datoteko v mapo data/ ali v root repo."),
         type = "error",
         duration = NULL
       )
@@ -478,13 +639,37 @@ server <- function(input, output, session) {
       
       rv$growth <- prep_growth(rv$dt_tot)
       
-      showNotification("Naloženo. Izberi leto.", type = "message")
+      showNotification("Izračunano. Izberi leto zemljevida in obdobje indeksov rasti.", type = "message")
     })
   }, ignoreInit = TRUE)
   
   output$year_ui <- renderUI({
     req(rv$years_available)
-    selectInput("year_choice", "Leto", choices = rv$years_available, selected = max(rv$years_available))
+    selectInput("year_choice", "Leto Zemljevida", choices = rv$years_available, selected = max(rv$years_available))
+  })
+  
+  output$growth_range_ui <- renderUI({
+    req(rv$years_available)
+    ymin <- min(rv$years_available, na.rm = TRUE)
+    ymax <- max(rv$years_available, na.rm = TRUE)
+    
+    sliderInput(
+      "growth_year_range",
+      "Obdobje za indekse rasti (grafi)",
+      min = ymin, max = ymax,
+      value = c(max(ymin, ymax - 10), ymax),
+      sep = "",
+      step = 1
+    )
+  })
+  
+  growth_year_from <- reactive({
+    req(input$growth_year_range)
+    as.integer(input$growth_year_range[1])
+  })
+  growth_year_to <- reactive({
+    req(input$growth_year_range)
+    as.integer(input$growth_year_range[2])
   })
   
   # ---- Letno: tabela v M€ + barvanje vrstic po bilanci (rdeča/zelena)
@@ -516,11 +701,34 @@ server <- function(input, output, session) {
     rv$annual_plots$p_all
   })
   
-  # ---- Letno: bilanca stolpci INTERAKTIVNO
   output$plot_balance <- renderPlotly({
     req(rv$annual_plots)
     ggplotly(rv$annual_plots$p_balance, tooltip = "text") |>
       layout(hoverlabel = list(align = "left"))
+  })
+  
+  # ---- Indeksi rasti: grafi (z izbranim obdobjem)
+  growth_plots_now <- reactive({
+    req(rv$growth, input$growth_year_range)
+    make_growth_plots(rv$growth, growth_year_from(), growth_year_to())
+  })
+  
+  output$growth_plot_annual <- renderPlotly({
+    req(growth_plots_now())
+    p <- ggplotly(growth_plots_now()$p_annual, tooltip = "text")
+    style_growth_plotly(p)
+  })
+  
+  output$growth_plot_monthly <- renderPlotly({
+    req(growth_plots_now())
+    p <- ggplotly(growth_plots_now()$p_monthly, tooltip = "text")
+    style_growth_plotly(p)
+  })
+  
+  output$growth_plot_quarter <- renderPlotly({
+    req(growth_plots_now())
+    p <- ggplotly(growth_plots_now()$p_quarter, tooltip = "text")
+    style_growth_plotly(p)
   })
   
   # ---- Zemljevid: podatki za leto
@@ -610,9 +818,8 @@ server <- function(input, output, session) {
   })
   
   # ---------------------------
-  # RASTI: tabele v M€ + barvanje celic % (+ zeleno, - rdeče)
-  # + razvrstitev najnovejše -> najstarejše
-  # + % naj ostane z znakom
+  # INDEKSI RASTI: tabele v M€ + barvanje celic % (+ zeleno, - rdeče)
+  # (tabele ostanejo "najnovejše zgoraj", slider je za grafe)
   # ---------------------------
   
   output$tbl_growth_annual <- renderDT({
